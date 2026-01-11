@@ -1,28 +1,38 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { db } from '../firebase';
 import {
   collection,
   addDoc,
   getDocs,
-  updateDoc,
   deleteDoc,
   serverTimestamp,
   doc,
+  query,
+  orderBy,
+  updateDoc
 } from 'firebase/firestore';
 import toast, { Toaster } from 'react-hot-toast';
-import { FiEdit, FiTrash, FiUploadCloud, FiFile, FiX } from 'react-icons/fi';
+import { FiUploadCloud, FiX, FiChevronLeft, FiChevronRight, FiFilter, FiTrash2 } from 'react-icons/fi';
 import JSZip from 'jszip';
 
 const FileUploadAndSelect = () => {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [price, setPrice] = useState('');
   const [uploading, setUploading] = useState(false);
   const [extractingZip, setExtractingZip] = useState(false);
   const [uploadedItems, setUploadedItems] = useState([]);
-  const fileInputRefs = useRef({});
+  
+  // Viewing State
+  const [viewCategory, setViewCategory] = useState('All');
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 30;
+
   const categories = ['Offset Print', 'Invitation', 'Flex', 'Digital Print'];
   const uploadsRef = collection(db, 'uploads');
+
+  const showPriceInput = selectedCategory === 'Invitation' || selectedCategory === 'Digital Print';
 
   useEffect(() => {
     fetchUploads();
@@ -30,27 +40,24 @@ const FileUploadAndSelect = () => {
 
   const fetchUploads = async () => {
     try {
-      const snapshot = await getDocs(uploadsRef);
+      const q = query(uploadsRef, orderBy('createdAt', 'desc'));
+      const snapshot = await getDocs(q);
       const items = snapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data(),
-        imageUrls: doc.data().imageUrls || []
+        ...doc.data()
       }));
       setUploadedItems(items);
     } catch (error) {
-      console.error('Error fetching uploads:', error);
       toast.error('Failed to load uploads');
     }
   };
 
+  // --- COMPREHENSIVE FILE HANDLER (Images + ZIP) ---
   const handleFileChange = async (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
-    
-    // Reset input to allow selecting same file again
     e.target.value = null;
 
-    // Check if any file is a ZIP
     const zipFile = files.find(file => file.name.toLowerCase().endsWith('.zip'));
 
     if (zipFile) {
@@ -58,407 +65,236 @@ const FileUploadAndSelect = () => {
       try {
         const zip = new JSZip();
         const contents = await zip.loadAsync(zipFile);
-        
         const imageFiles = [];
         const mimeTypes = {
-          jpg: 'image/jpeg',
-          jpeg: 'image/jpeg',
-          png: 'image/png',
-          gif: 'image/gif',
-          webp: 'image/webp',
-          bmp: 'image/bmp',
-          tif: 'image/tiff',
-          tiff: 'image/tiff'
+          jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+          gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+          tif: 'image/tiff', tiff: 'image/tiff'
         };
         
-        // Process each file in ZIP
         const filePromises = [];
         contents.forEach((relativePath, zipEntry) => {
           if (!zipEntry.dir) {
-            const parts = zipEntry.name.split('.');
-            if (parts.length > 1) {
-              const extension = parts.pop().toLowerCase();
-              
-              if (mimeTypes[extension]) {
-                filePromises.push(
-                  zipEntry.async('blob').then(blob => {
-                    const file = new File(
-                      [blob], 
-                      zipEntry.name, 
-                      { type: mimeTypes[extension] || 'application/octet-stream' }
-                    );
-                    imageFiles.push(file);
-                  })
-                );
-              }
+            const extension = zipEntry.name.split('.').pop().toLowerCase();
+            if (mimeTypes[extension]) {
+              filePromises.push(
+                zipEntry.async('blob').then(blob => {
+                  imageFiles.push(new File([blob], zipEntry.name, { type: mimeTypes[extension] }));
+                })
+              );
             }
           }
         });
         
         await Promise.all(filePromises);
-        
-        // Validate image count
-        if (imageFiles.length < 5) {
-          toast.error('ZIP must contain at least 5 images');
-          return;
-        }
-        if (imageFiles.length > 30) {
-          toast.error('ZIP can contain at most 30 images');
-          return;
-        }
-        
+        if (imageFiles.length < 5) return toast.error('ZIP must contain at least 5 images');
+        if (imageFiles.length > 30) return toast.error('ZIP max 30 images');
         setSelectedFiles(imageFiles);
       } catch (error) {
-        console.error('Error extracting ZIP:', error);
-        toast.error('Failed to extract ZIP: ' + error.message);
+        toast.error('Failed to extract ZIP');
       } finally {
         setExtractingZip(false);
       }
     } else {
-      // Handle regular image files
-      const mimeTypes = {
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        png: 'image/png',
-        gif: 'image/gif',
-        webp: 'image/webp',
-        bmp: 'image/bmp',
-        tif: 'image/tiff',
-        tiff: 'image/tiff'
-      };
-      
+      const validExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff'];
       const validImages = files.filter(file => {
-        const extension = file.name.split('.').pop().toLowerCase();
-        return Object.keys(mimeTypes).includes(extension);
+        const ext = file.name.split('.').pop().toLowerCase();
+        return validExtensions.includes(ext);
       });
-      
-      const newFiles = validImages.slice(0, 5 - selectedFiles.length);
-      setSelectedFiles(prev => [...prev, ...newFiles]);
+      setSelectedFiles(prev => [...prev, ...validImages].slice(0, 30));
     }
   };
 
-  const removeFile = (index) => {
-    const updatedFiles = selectedFiles.filter((_, i) => i !== index);
-    setSelectedFiles(updatedFiles);
-  };
+  // --- FILTERING & PAGINATION LOGIC ---
+  const filteredImages = useMemo(() => {
+    let list = [];
+    uploadedItems.forEach(item => {
+      //  CATEGORY FILTERING
+      if (viewCategory === 'All' || item.category === viewCategory) {
+        const urls = item.imageUrls || [];
+        urls.forEach((url, index) => {
+          list.push({
+            url,
+            id: item.id,
+            index,
+            category: item.category,
+            price: item.price,
+            allUrls: urls
+          });
+        });
+      }
+    });
+    return list;
+  }, [uploadedItems, viewCategory]);
+
+  const totalPages = Math.ceil(filteredImages.length / itemsPerPage);
+  const currentImages = filteredImages.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
   const uploadToCloudinary = async (file) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('upload_preset', 'ClientProject');
-
-    const response = await axios.post(
-      'https://api.cloudinary.com/v1_1/dt0scx3rz/image/upload',
-      formData
-    );
-
+    const response = await axios.post('https://api.cloudinary.com/v1_1/dt0scx3rz/image/upload', formData);
     return response.data.secure_url;
   };
 
   const handleSubmit = async () => {
-    if (selectedFiles.length === 0 || !selectedCategory) {
-      toast.error('Please select files and a category');
-      return;
-    }
-    
-    if (selectedFiles.length < 5 && selectedFiles.some(f => f.name.endsWith('.zip'))) {
-      toast.error('ZIP uploads must contain at least 5 images');
-      return;
-    }
-
+    if (selectedFiles.length === 0 || !selectedCategory) return toast.error('Select files and category');
     setUploading(true);
-    const toastId = toast.loading(`Uploading ${selectedFiles.length} images...`);
+    const toastId = toast.loading('Uploading images...');
 
     try {
-      const uploadPromises = selectedFiles.map(file => uploadToCloudinary(file));
-      const imageUrls = await Promise.all(uploadPromises);
-
+      const imageUrls = await Promise.all(selectedFiles.map(file => uploadToCloudinary(file)));
       await addDoc(uploadsRef, {
         imageUrls,
         category: selectedCategory,
+        price: showPriceInput ? price : null,
         createdAt: serverTimestamp(),
       });
-
       toast.dismiss(toastId);
-      toast.success(`Uploaded ${imageUrls.length} images successfully!`);
+      toast.success('Upload Successful');
       setSelectedFiles([]);
-      setSelectedCategory('');
+      setPrice('');
       fetchUploads();
     } catch (error) {
       toast.dismiss(toastId);
-      toast.error(`Upload failed: ${error.message}`);
+      toast.error('Upload failed');
     } finally {
       setUploading(false);
     }
   };
 
-  const handleImageDelete = async (groupId, index) => {
+  const handleSingleImageDelete = async (imgObj) => {
     if (!window.confirm('Delete this image?')) return;
-    const itemRef = doc(db, 'uploads', groupId);
-    const item = uploadedItems.find(item => item.id === groupId);
-
-    if (!item) return toast.error('Item not found');
-
-    const updatedImages = item.imageUrls.filter((_, i) => i !== index);
-
-    await updateDoc(itemRef, { imageUrls: updatedImages });
-    toast.success('Image deleted');
-    fetchUploads();
-  };
-
-  const handleImageReplace = async (e, groupId, index) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const toastId = toast.loading('Replacing image...');
     try {
-      const newUrl = await uploadToCloudinary(file);
-      const item = uploadedItems.find(item => item.id === groupId);
-      if (!item) throw new Error('Item not found');
-
-      const updatedImages = [...item.imageUrls];
-      updatedImages[index] = newUrl;
-
-      await updateDoc(doc(db, 'uploads', groupId), {
-        imageUrls: updatedImages
-      });
-
-      toast.dismiss(toastId);
-      toast.success('Image replaced');
+      const docRef = doc(db, 'uploads', imgObj.id);
+      const newUrls = imgObj.allUrls.filter((_, i) => i !== imgObj.index);
+      if (newUrls.length === 0) {
+        await deleteDoc(docRef);
+      } else {
+        await updateDoc(docRef, { imageUrls: newUrls });
+      }
       fetchUploads();
+      toast.success('Image Deleted');
     } catch (err) {
-      toast.dismiss(toastId);
-      toast.error('Replace failed');
-    }
-  };
-
-  const handleCategoryUpdate = async (id, newCategory) => {
-    try {
-      await updateDoc(doc(db, 'uploads', id), { category: newCategory });
-      toast.success('Category updated!');
-      fetchUploads();
-    } catch {
-      toast.error('Failed to update category');
-    }
-  };
-
-  const handleDeleteGroup = async (id) => {
-    if (!window.confirm('Delete entire group?')) return;
-    try {
-      await deleteDoc(doc(db, 'uploads', id));
-      toast.success('Deleted group');
-      setUploadedItems(prev => prev.filter(item => item.id !== id));
-    } catch {
       toast.error('Delete failed');
     }
   };
 
   return (
-    <div className="relative max-w-4xl mx-auto p-6 pt-10 space-y-10">
+    <div className="max-w-6xl mx-auto p-6 pt-10 space-y-10">
       <Toaster position="top-right" />
 
-      {/* Logout */}
-      <button
-        onClick={() => {
-          localStorage.removeItem('isLoggedIn');
-          window.location.href = '/admin';
-        }}
-        className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded"
-      >
-        Logout
-      </button>
+      {/* UPLOAD SECTION */}
+      <section className="bg-white shadow-sm rounded-xl p-6 border border-gray-100 relative">
+        <button onClick={() => { localStorage.removeItem('isLoggedIn'); window.location.href = '/admin'; }} className="absolute top-6 right-6 text-sm bg-red-50 text-red-500 px-3 py-1 rounded-lg hover:bg-red-100 transition">Logout</button>
+        <h2 className="text-xl font-bold text-gray-800 mb-6">Click to upload images (max 5) or ZIP file (5-30 images)</h2>
 
-      {/* Upload Section */}
-      <section className="bg-white shadow-md rounded-lg p-6 border">
-        <h2 className="text-xl font-semibold mb-4">Upload New Design</h2>
-
-        {extractingZip ? (
-          <div className="flex flex-col items-center justify-center h-40 border-2 border-dashed border-blue-400 bg-blue-50 rounded-lg">
-            <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-blue-500 mb-3"></div>
-            <span className="text-blue-600">Extracting ZIP file...</span>
-          </div>
-        ) : selectedFiles.length < 5 ? (
-          <label className="flex flex-col items-center justify-center h-40 border-2 border-dashed border-blue-400 bg-blue-50 hover:bg-blue-100 cursor-pointer rounded-lg">
-            <input
-              type="file"
-              multiple
-              accept=".jpg,.jpeg,.png,.tif,.tiff,.bmp,.gif,.webp,.zip"
-              onChange={handleFileChange}
-              className="hidden"
-            />
-            <FiUploadCloud className="w-8 h-8 text-blue-500 mb-2" />
-            <span className="text-sm font-medium text-blue-600 text-center">
-              Click to upload images (max 5) or ZIP file (5-30 images)
-              <br />
-              <span className="text-xs text-gray-500">({selectedFiles.length}/5)</span>
-            </span>
-          </label>
-        ) : null}
-
-        {selectedFiles.length > 0 && (
-          <div className="mt-4">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="text-sm font-medium">
-                {selectedFiles.length} {selectedFiles.length === 1 ? 'file' : 'files'} selected
-                {selectedFiles.some(f => f.name.endsWith('.zip')) && ' (from ZIP)'}
-              </h3>
-              <button
-                onClick={() => setSelectedFiles([])}
-                className="text-xs text-red-500 hover:text-red-700 flex items-center"
-              >
-                <FiX className="mr-1" /> Clear all
-              </button>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {extractingZip ? (
+            <div className="flex flex-col items-center justify-center h-48 border-2 border-dashed border-blue-200 bg-blue-50 rounded-xl">
+              <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-blue-500 mb-2"></div>
+              <p className="text-sm text-blue-600">Extracting ZIP contents...</p>
             </div>
-            
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 max-h-96 overflow-y-auto">
-              {selectedFiles.map((file, index) => (
-                <div key={index} className="relative border rounded overflow-hidden shadow-sm">
-                  {file.name.endsWith('.zip') ? (
-                    <div className="w-full h-28 flex flex-col items-center justify-center bg-gray-100">
-                      <FiFile className="w-8 h-8 text-gray-400" />
-                      <span className="text-xs text-gray-600 mt-2 px-2 truncate w-full text-center">
-                        {file.name}
-                      </span>
-                    </div>
-                  ) : (
-                    <>
-                      <img
-                        src={URL.createObjectURL(file)}
-                        alt={`preview-${index}`}
-                        className="w-full h-28 object-cover"
-                      />
-                      <button
-                        onClick={() => removeFile(index)}
-                        className="absolute top-1 right-1 bg-white text-red-500 font-bold rounded-full text-sm px-2 shadow hover:bg-red-100"
-                      >
-                        ×
-                      </button>
-                    </>
-                  )}
+          ) : (
+            <label className="flex flex-col items-center justify-center h-48 border-2 border-dashed border-blue-200 bg-blue-50/30 hover:bg-blue-50 cursor-pointer rounded-xl transition-all">
+              <input type="file" multiple accept=".jpg,.jpeg,.png,.webp,.zip,.tif,.tiff,.bmp,.gif" onChange={handleFileChange} className="hidden" />
+              <FiUploadCloud className="w-10 h-10 text-blue-400 mb-2" />
+              <p className="text-sm font-semibold text-blue-600">Select Images or ZIP</p>
+              <p className="text-xs text-gray-400 mt-1">{selectedFiles.length} files selected</p>
+            </label>
+          )}
+
+          <div className="space-y-4">
+            <div>
+              <p className="text-xs font-bold text-gray-400 uppercase mb-2 tracking-wider">Design Category</p>
+              <div className="flex flex-wrap gap-2">
+                {categories.map(cat => (
+                  <button key={cat} onClick={() => setSelectedCategory(cat)} className={`px-4 py-2 rounded-lg text-sm border transition-all ${selectedCategory === cat ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}>{cat}</button>
+                ))}
+              </div>
+            </div>
+
+            {showPriceInput && (
+              <div className="animate-in fade-in slide-in-from-top-2">
+                <p className="text-xs font-bold text-gray-400 uppercase mb-1 tracking-wider">Price per 100 pieces</p>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-gray-400 text-sm">₹</span>
+                  <input type="number" value={price} onChange={(e) => setPrice(e.target.value)} className="w-full border border-gray-200 rounded-lg pl-8 pr-4 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Enter amount" />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <button onClick={handleSubmit} disabled={uploading || !selectedCategory || selectedFiles.length === 0} className="w-full mt-6 bg-blue-600 text-white py-3.5 rounded-lg font-bold hover:bg-blue-700 disabled:bg-gray-200 transition-all shadow-lg shadow-blue-100">
+          {uploading ? 'Processing Upload...' : `Confirm & Save ${selectedFiles.length > 0 ? `(${selectedFiles.length} items)` : ''}`}
+        </button>
+      </section>
+
+      {/* GALLERY SECTION */}
+      <section className="bg-white shadow-sm rounded-xl border border-gray-100 overflow-hidden">
+        <div className="p-6 border-b border-gray-50 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gray-50/30">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-blue-600 rounded-lg shadow-md shadow-blue-100"><FiFilter className="text-white" /></div>
+            <h2 className="text-xl font-bold text-gray-800">Design Inventory</h2>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-bold text-gray-400 uppercase">View Category:</span>
+            <select 
+              value={viewCategory}
+              onChange={(e) => { setViewCategory(e.target.value); setCurrentPage(1); }}
+              className="bg-white border border-gray-200 rounded-lg px-4 py-2 text-sm font-bold text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer"
+            >
+              <option value="All">All Categories</option>
+              {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="p-6">
+          {currentImages.length === 0 ? (
+            <div className="py-24 text-center">
+              <p className="text-gray-400 text-lg">No designs found in <span className="font-bold text-gray-600">{viewCategory}</span></p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
+              {currentImages.map((img, idx) => (
+                <div key={`${img.id}-${idx}`} className="group relative aspect-[4/5] bg-gray-50 rounded-xl overflow-hidden border border-gray-100 transition-all duration-300 hover:shadow-2xl">
+                  <img src={img.url} alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                  
+                  {/* Bottom Info Bar */}
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent p-3 pt-8 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <p className="text-[10px] text-blue-400 font-black uppercase tracking-widest leading-none mb-1">{img.category}</p>
+                    {img.price && (
+                      <p className="text-white text-xs font-bold">₹{img.price} <span className="text-[9px] font-normal opacity-70">/ 100pcs</span></p>
+                    )}
+                  </div>
+
+                  <button 
+                    onClick={() => handleSingleImageDelete(img)}
+                    className="absolute top-2 right-2 bg-white/95 hover:bg-red-600 hover:text-white text-red-600 p-2 rounded-lg shadow-lg transition-all opacity-0 group-hover:opacity-100 translate-y-[-10px] group-hover:translate-y-0"
+                  >
+                    <FiTrash2 size={14} />
+                  </button>
                 </div>
               ))}
             </div>
-          </div>
-        )}
-
-        <div className="mt-6">
-          <h3 className="text-sm font-medium mb-2">Select Category</h3>
-          <div className="flex flex-wrap gap-2">
-            {categories.map((cat) => (
-              <button
-                key={cat}
-                onClick={() => setSelectedCategory(cat)}
-                className={`px-4 py-2 rounded-full text-sm border transition ${
-                  selectedCategory === cat
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
+          )}
         </div>
 
-        <div className="mt-6">
-          <button
-            onClick={handleSubmit}
-            disabled={selectedFiles.length === 0 || !selectedCategory || uploading}
-            className={`w-full py-3 rounded-lg font-semibold text-white transition ${
-              selectedFiles.length === 0 || !selectedCategory || uploading
-                ? 'bg-gray-300 cursor-not-allowed'
-                : 'bg-blue-600 hover:bg-blue-700'
-            }`}
-          >
-            {uploading
-              ? `Uploading... (${selectedFiles.length})`
-              : `Upload ${selectedFiles.length} Image(s)`}
-          </button>
-        </div>
-      </section>
-
-      {/* Uploaded Groups */}
-      <section className="space-y-6">
-        <h2 className="text-xl font-semibold">Uploaded Items</h2>
-
-        {uploadedItems.length === 0 ? (
-          <div className="bg-white p-8 text-center rounded-lg border border-dashed">
-            <p className="text-gray-500">No items uploaded yet</p>
-          </div>
-        ) : (
-          uploadedItems.map((item) => (
-            <div key={item.id} className="bg-white p-4 rounded-lg shadow border">
-              <div className="mb-3 flex justify-between items-center">
-                <h3 className="font-medium">
-                  {item.category} - {item.imageUrls.length} image(s)
-                </h3>
-                <span className="text-xs text-gray-500">
-                  {item.createdAt?.toDate()?.toLocaleString()}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
-                {item.imageUrls.map((url, index) => (
-                  <div key={index} className="relative group">
-                    <img
-                      src={url}
-                      alt={`uploaded-${index}`}
-                      className="w-full h-28 object-cover rounded border"
-                    />
-                    <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 flex items-center justify-center opacity-0 group-hover:opacity-100">
-                      <div className="flex gap-2">
-                        <input
-                          type="file"
-                          accept=".jpg,.jpeg,.png,.tif,.tiff,.bmp,.gif,.webp"
-                          className="hidden"
-                          ref={(el) => (fileInputRefs.current[`${item.id}-${index}`] = el)}
-                          onChange={(e) => handleImageReplace(e, item.id, index)}
-                        />
-                        <button
-                          className="p-2 rounded-full bg-white hover:bg-yellow-100 text-yellow-600 shadow"
-                          title="Replace"
-                          onClick={() => fileInputRefs.current[`${item.id}-${index}`].click()}
-                        >
-                          <FiEdit size={16} />
-                        </button>
-                        <button
-                          className="p-2 rounded-full bg-white hover:bg-red-100 text-red-600 shadow"
-                          title="Delete"
-                          onClick={() => handleImageDelete(item.id, index)}
-                        >
-                          <FiTrash size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex justify-between items-center border-t pt-3">
-                <div className="text-sm text-gray-700 flex items-center gap-2">
-                  <span className="font-medium">Category:</span>
-                  <select
-                    value={item.category}
-                    onChange={(e) => handleCategoryUpdate(item.id, e.target.value)}
-                    className="border px-2 py-1 rounded text-sm"
-                  >
-                    {categories.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  onClick={() => handleDeleteGroup(item.id)}
-                  className="flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white px-3 py-1 text-sm rounded"
-                >
-                  <FiTrash size={16} />
-                  Delete Group
-                </button>
-              </div>
+        {/* PAGINATION */}
+        {totalPages > 1 && (
+          <div className="p-6 border-t border-gray-50 flex justify-center items-center gap-4">
+            <button disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} className="p-2 rounded-lg border hover:bg-gray-50 disabled:opacity-20 transition-all"><FiChevronLeft /></button>
+            <div className="flex gap-2">
+              {[...Array(totalPages)].map((_, i) => (
+                <button key={i} onClick={() => setCurrentPage(i + 1)} className={`w-9 h-9 rounded-lg text-xs font-bold transition-all ${currentPage === i + 1 ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : 'bg-white text-gray-400 border border-gray-100 hover:border-blue-200 hover:text-blue-600'}`}>{i + 1}</button>
+              ))}
             </div>
-          ))
+            <button disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)} className="p-2 rounded-lg border hover:bg-gray-50 disabled:opacity-20 transition-all"><FiChevronRight /></button>
+          </div>
         )}
       </section>
     </div>
