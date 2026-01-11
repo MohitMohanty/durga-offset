@@ -13,7 +13,16 @@ import {
   updateDoc
 } from 'firebase/firestore';
 import toast, { Toaster } from 'react-hot-toast';
-import { FiUploadCloud, FiX, FiChevronLeft, FiChevronRight, FiFilter, FiTrash2 } from 'react-icons/fi';
+import { 
+  FiUploadCloud, 
+  FiX, 
+  FiChevronLeft, 
+  FiChevronRight, 
+  FiFilter, 
+  FiTrash2, 
+  FiEdit2, 
+  FiCheck 
+} from 'react-icons/fi';
 import JSZip from 'jszip';
 
 const FileUploadAndSelect = () => {
@@ -28,6 +37,10 @@ const FileUploadAndSelect = () => {
   const [viewCategory, setViewCategory] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 30;
+
+  // Editing State
+  const [editingId, setEditingId] = useState(null);
+  const [editPriceValue, setEditPriceValue] = useState('');
 
   const categories = ['Offset Print', 'Invitation', 'Flex', 'Digital Print'];
   const uploadsRef = collection(db, 'uploads');
@@ -181,6 +194,38 @@ const FileUploadAndSelect = () => {
     }
   };
 
+  // --- PRICE EDITING LOGIC ---
+  const startEditing = (img) => {
+    setEditingId(img.id);
+    setEditPriceValue(img.price || '');
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditPriceValue('');
+  };
+
+  const handleUpdatePrice = async (id) => {
+    if (!editPriceValue) return toast.error('Please enter a price');
+    
+    try {
+      const docRef = doc(db, 'uploads', id);
+      await updateDoc(docRef, { price: editPriceValue });
+      
+      // Update local state to reflect change immediately
+      setUploadedItems(prevItems => 
+        prevItems.map(item => 
+          item.id === id ? { ...item, price: editPriceValue } : item
+        )
+      );
+      
+      toast.success('Price updated');
+      setEditingId(null);
+    } catch (error) {
+      toast.error('Failed to update price');
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto p-6 pt-10 space-y-10">
       <Toaster position="top-right" />
@@ -239,7 +284,7 @@ const FileUploadAndSelect = () => {
             <div className="p-2 bg-blue-600 rounded-lg shadow-md shadow-blue-100"><FiFilter className="text-white" /></div>
             <h2 className="text-xl font-bold text-gray-800">Design Inventory</h2>
           </div>
-          
+           
           <div className="flex items-center gap-3">
             <span className="text-xs font-bold text-gray-400 uppercase">View Category:</span>
             <select 
@@ -260,26 +305,65 @@ const FileUploadAndSelect = () => {
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5">
-              {currentImages.map((img, idx) => (
-                <div key={`${img.id}-${idx}`} className="group relative aspect-[4/5] bg-gray-50 rounded-xl overflow-hidden border border-gray-100 transition-all duration-300 hover:shadow-2xl">
-                  <img src={img.url} alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
-                  
-                  {/* Bottom Info Bar */}
-                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent p-3 pt-8 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <p className="text-[10px] text-blue-400 font-black uppercase tracking-widest leading-none mb-1">{img.category}</p>
-                    {img.price && (
-                      <p className="text-white text-xs font-bold">₹{img.price} <span className="text-[9px] font-normal opacity-70">/ 100pcs</span></p>
-                    )}
-                  </div>
+              {currentImages.map((img, idx) => {
+                const isPriceEditable = img.category === 'Invitation' || img.category === 'Digital Print';
+                const isEditing = editingId === img.id;
 
-                  <button 
-                    onClick={() => handleSingleImageDelete(img)}
-                    className="absolute top-2 right-2 bg-white/95 hover:bg-red-600 hover:text-white text-red-600 p-2 rounded-lg shadow-lg transition-all opacity-0 group-hover:opacity-100 translate-y-[-10px] group-hover:translate-y-0"
-                  >
-                    <FiTrash2 size={14} />
-                  </button>
-                </div>
-              ))}
+                return (
+                  <div key={`${img.id}-${idx}`} className="group relative aspect-[4/5] bg-gray-50 rounded-xl overflow-hidden border border-gray-100 transition-all duration-300 hover:shadow-2xl">
+                    <img src={img.url} alt="" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
+                    
+                    {/* Bottom Info Bar */}
+                    <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent p-3 pt-8 transition-opacity ${isEditing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                      <p className="text-[10px] text-blue-400 font-black uppercase tracking-widest leading-none mb-1">{img.category}</p>
+                      
+                      {isEditing ? (
+                        <div className="flex items-center gap-2 mt-1">
+                          <input 
+                            type="number" 
+                            value={editPriceValue} 
+                            onChange={(e) => setEditPriceValue(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full bg-white/10 border border-white/30 rounded px-2 py-1 text-xs text-white placeholder-white/50 focus:outline-none focus:border-blue-400"
+                            placeholder="Price"
+                            autoFocus
+                          />
+                          <button onClick={() => handleUpdatePrice(img.id)} className="text-green-400 hover:text-green-300"><FiCheck size={16} /></button>
+                          <button onClick={cancelEditing} className="text-red-400 hover:text-red-300"><FiX size={16} /></button>
+                        </div>
+                      ) : (
+                        (img.price || isPriceEditable) && (
+                          <p className="text-white text-xs font-bold">
+                            {img.price ? `₹${img.price}` : <span className="text-yellow-300">Add Price</span>} 
+                            {img.price && <span className="text-[9px] font-normal opacity-70"> / 100pcs</span>}
+                          </p>
+                        )
+                      )}
+                    </div>
+
+                    {/* Top Right Actions */}
+                    <div className="absolute top-2 right-2 flex gap-1 translate-y-[-10px] opacity-0 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-300">
+                      {isPriceEditable && !isEditing && (
+                        <button 
+                          onClick={() => startEditing(img)}
+                          className="bg-white/95 hover:bg-blue-600 hover:text-white text-blue-600 p-2 rounded-lg shadow-lg transition-all"
+                          title="Edit Price"
+                        >
+                          <FiEdit2 size={14} />
+                        </button>
+                      )}
+                      
+                      <button 
+                        onClick={() => handleSingleImageDelete(img)}
+                        className="bg-white/95 hover:bg-red-600 hover:text-white text-red-600 p-2 rounded-lg shadow-lg transition-all"
+                        title="Delete Image"
+                      >
+                        <FiTrash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
