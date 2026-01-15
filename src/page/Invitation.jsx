@@ -124,7 +124,7 @@ const Invitation = () => {
                       <p className="text-cyan-700 font-bold text-lg leading-none">
                         {img.price ? `₹${img.price}` : "N/A"}
                         <span className="text-[10px] text-gray-500 font-normal ml-1">
-                          /100 pcs
+                          /1 piece (* Minimum 100 pcs)
                         </span>
                       </p>
                     </div>
@@ -196,7 +196,7 @@ const Invitation = () => {
                 <p className="text-gray-500 mb-2">{selectedDesc}</p>
                 <p className="text-cyan-600 font-bold text-xl">
                   {selectedPrice ? `₹${selectedPrice}` : "Contact for Price"}{" "}
-                  <span className="text-sm text-gray-400 font-normal">per 100 pieces</span>
+                  <span className="text-sm text-gray-400 font-normal">per 1 piece</span>
                 </p>
               </div>
               
