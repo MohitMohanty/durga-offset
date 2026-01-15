@@ -196,7 +196,7 @@ const Invitation = () => {
                 <p className="text-gray-500 mb-2">{selectedDesc}</p>
                 <p className="text-cyan-600 font-bold text-xl">
                   {selectedPrice ? `₹${selectedPrice}` : "Contact for Price"}{" "}
-                  <span className="text-sm text-gray-400 font-normal">per 100 pieces</span>
+                  <span className="text-sm text-gray-400 font-normal">per single pieces</span>
                 </p>
               </div>
               
